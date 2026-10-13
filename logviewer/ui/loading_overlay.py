@@ -61,10 +61,10 @@ class LoadingOverlay(QWidget):
         self.hide()
         parent.installEventFilter(self)
 
-        # Centered card
+        # Centered card (strictly fixed size so content never causes size bouncing)
         self.card = QFrame(self)
         self.card.setObjectName("loadingCard")
-        self.card.setFixedWidth(380)
+        self.card.setFixedSize(420, 220)
         self.card.setStyleSheet(
             "#loadingCard {"
             "  background-color: palette(base);"
@@ -74,8 +74,8 @@ class LoadingOverlay(QWidget):
         )
 
         card_lay = QVBoxLayout(self.card)
-        card_lay.setContentsMargins(24, 22, 24, 22)
-        card_lay.setSpacing(10)
+        card_lay.setContentsMargins(24, 20, 24, 20)
+        card_lay.setSpacing(8)
         card_lay.setAlignment(Qt.AlignCenter)
 
         self.spinner = SpinnerWidget(44, self.card)
@@ -86,12 +86,13 @@ class LoadingOverlay(QWidget):
         t_font.setBold(True)
         self.title_label.setFont(t_font)
         self.title_label.setAlignment(Qt.AlignCenter)
-        self.title_label.setWordWrap(True)
+        self.title_label.setFixedHeight(24)
 
         self.detail_label = QLabel("", self.card)
         self.detail_label.setAlignment(Qt.AlignCenter)
         self.detail_label.setStyleSheet("color: gray; font-size: 12px;")
         self.detail_label.setWordWrap(True)
+        self.detail_label.setFixedHeight(38)
 
         self.progress = QProgressBar(self.card)
         self.progress.setFixedHeight(8)
@@ -112,12 +113,11 @@ class LoadingOverlay(QWidget):
         self.pct_label = QLabel("", self.card)
         self.pct_label.setAlignment(Qt.AlignCenter)
         self.pct_label.setStyleSheet("color: #3b82f6; font-weight: 600; font-size: 11px;")
+        self.pct_label.setFixedHeight(16)
 
         card_lay.addWidget(self.spinner, 0, Qt.AlignHCenter)
-        card_lay.addSpacing(2)
         card_lay.addWidget(self.title_label)
         card_lay.addWidget(self.detail_label)
-        card_lay.addSpacing(4)
         card_lay.addWidget(self.progress)
         card_lay.addWidget(self.pct_label)
 
@@ -137,7 +137,6 @@ class LoadingOverlay(QWidget):
             self.progress.setRange(0, 100)
             self.progress.setValue(pct)
             self.pct_label.setText(f"{pct}%")
-            self.pct_label.show()
         elif m_frac := FRAC_RE.search(text):
             cur, total = int(m_frac.group(1)), int(m_frac.group(2))
             if total > 0:
@@ -145,11 +144,9 @@ class LoadingOverlay(QWidget):
                 self.progress.setRange(0, 100)
                 self.progress.setValue(pct)
                 self.pct_label.setText(f"{cur}/{total} ({pct}%)")
-                self.pct_label.show()
         else:
             self.progress.setRange(0, 0)
-            self.pct_label.hide()
-        self._center_card()
+            self.pct_label.setText("")
 
     def stop(self):
         self.spinner.stop()
@@ -161,7 +158,6 @@ class LoadingOverlay(QWidget):
             self._center_card()
 
     def _center_card(self):
-        self.card.adjustSize()
         x = (self.width() - self.card.width()) // 2
         y = (self.height() - self.card.height()) // 2
         self.card.move(max(0, x), max(0, y))
