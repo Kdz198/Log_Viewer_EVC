@@ -4,11 +4,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QSize, Qt, QThread, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox,
-                               QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout)
+                               QPushButton, QStyledItemDelegate, QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
 try:
     from ..library import Library
@@ -102,14 +102,61 @@ class MinioDownloadWorker(QThread):
             self.failed.emit(str(ex))
 
 
+class MinioRowDelegate(QStyledItemDelegate):
+    def sizeHint(self, option, index):
+        s = super().sizeHint(option, index)
+        return QSize(s.width(), max(s.height(), 36))
+
+
+class MinioTreeWidget(QTreeWidget):
+    """Tree widget where clicking anywhere on a row toggles its check state."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._last_button = Qt.NoButton
+        self._changed_in_mouse_event = False
+        self.itemChanged.connect(self._on_item_changed)
+        self.itemClicked.connect(self._on_item_clicked)
+        self.setItemDelegate(MinioRowDelegate(self))
+
+    def mousePressEvent(self, event):
+        self._last_button = event.button()
+        self._changed_in_mouse_event = False
+        super().mousePressEvent(event)
+
+    def _on_item_changed(self, item, col):
+        self._changed_in_mouse_event = True
+
+    def _on_item_clicked(self, item, col):
+        if self._last_button == Qt.LeftButton and not self._changed_in_mouse_event:
+            new_state = Qt.Unchecked if item.checkState(0) == Qt.Checked else Qt.Checked
+            item.setCheckState(0, new_state)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            cur = self.currentItem()
+            if cur:
+                self.itemDoubleClicked.emit(cur, 0)
+                event.accept()
+                return
+        elif event.key() == Qt.Key_Space:
+            cur = self.currentItem()
+            if cur:
+                new_state = Qt.Unchecked if cur.checkState(0) == Qt.Checked else Qt.Checked
+                cur.setCheckState(0, new_state)
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+
 class MinioDialog(QDialog):
     files_downloaded = Signal(list)   # list[str] paths to downloaded zip/archive files
     storage_changed = Signal()        # emitted when storage folder or items change
 
     def __init__(self, library: Library, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Tải log từ MinIO Console & Cấu hình nơi lưu")
-        self.resize(740, 660)
+        self.setWindowTitle("Tải log từ MinIO Console & Cấu hình nơi lưu trữ")
+        self.resize(920, 720)
+        self.setMinimumSize(840, 600)
         self.library = library
         self.cfg = load_minio_config()
         self._items: list[MinioItem] = []
@@ -118,26 +165,33 @@ class MinioDialog(QDialog):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
+        lay.setContentsMargins(14, 14, 14, 14)
 
         # --- Connection & Storage Group ---
-        conn_group = QGroupBox("Cấu hình kết nối MinIO && Thư mục lưu log")
+        conn_group = QGroupBox("Cấu hình kết nối MinIO & Thư mục lưu log")
+        conn_group.setStyleSheet("QGroupBox { font-weight: 600; font-size: 13px; }")
         form = QFormLayout(conn_group)
-        form.setContentsMargins(10, 10, 10, 10)
-        form.setSpacing(8)
+        form.setContentsMargins(12, 12, 12, 12)
+        form.setSpacing(10)
 
         self.url_edit = QLineEdit(self.cfg.url)
+        self.url_edit.setFixedHeight(30)
         self.url_edit.setPlaceholderText("https://prod-minio.evtruyxuatnguongoc.vn/browser/accounting-file-logs")
 
         cred_row = QHBoxLayout()
+        cred_row.setSpacing(8)
         self.user_edit = QLineEdit(self.cfg.username)
+        self.user_edit.setFixedHeight(30)
         self.user_edit.setPlaceholderText("Username (MINIO_USERNAME)")
         self.pass_edit = QLineEdit(self.cfg.password)
+        self.pass_edit.setFixedHeight(30)
         self.pass_edit.setPlaceholderText("Password (MINIO_PASSWORD)")
         self.pass_edit.setEchoMode(QLineEdit.Password)
         self.remember_cb = QCheckBox("Lưu tài khoản")
         self.remember_cb.setChecked(True)
-        self.connect_btn = QPushButton("Kết nối && Lấy danh sách")
-        self.connect_btn.setStyleSheet("font-weight: 600; padding: 4px 12px;")
+        self.connect_btn = QPushButton("⚡ Kết nối && Lấy danh sách")
+        self.connect_btn.setFixedHeight(30)
+        self.connect_btn.setStyleSheet("font-weight: 600; padding: 4px 14px;")
 
         cred_row.addWidget(QLabel("User:"))
         cred_row.addWidget(self.user_edit, 1)
@@ -147,15 +201,19 @@ class MinioDialog(QDialog):
         cred_row.addWidget(self.connect_btn)
 
         storage_row = QHBoxLayout()
+        storage_row.setSpacing(8)
         self.storage_edit = QLineEdit(str(self.library.root))
+        self.storage_edit.setFixedHeight(30)
         self.storage_edit.setReadOnly(True)
         self.storage_edit.setToolTip(
             "Mọi file tải từ MinIO hoặc import từ ngoài đều được lưu bản copy tại thư mục này.\n"
             "Khi đổi thư mục lưu, app sẽ tự động copy toàn bộ log đã lưu sang thư mục mới."
         )
         choose_dir_btn = QPushButton("📁 Chọn chỗ lưu…")
+        choose_dir_btn.setFixedHeight(30)
         choose_dir_btn.setToolTip("Đổi thư mục lưu log (tự động copy các log hiện có sang chỗ mới)")
         open_dir_btn = QPushButton("Mở thư mục")
+        open_dir_btn.setFixedHeight(30)
         open_dir_btn.setToolTip("Mở thư mục lưu log trong Windows Explorer")
         storage_row.addWidget(self.storage_edit, 1)
         storage_row.addWidget(choose_dir_btn)
@@ -168,24 +226,47 @@ class MinioDialog(QDialog):
 
         # --- Bucket & Filter Bar ---
         filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel("Package / Bucket:"))
+        filter_row.setSpacing(8)
+        filter_row.addWidget(QLabel("Bucket:"))
         self.bucket_combo = QComboBox()
         self.bucket_combo.setEditable(True)
-        self.bucket_combo.setMinimumWidth(220)
+        self.bucket_combo.setMinimumWidth(200)
+        self.bucket_combo.setFixedHeight(32)
         _, default_bucket = self.cfg.base_url_and_bucket()
         self.bucket_combo.addItem(default_bucket)
 
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Lọc nhanh ngày (ví dụ: 2026-07-25)…")
+        self.search_edit.setFixedHeight(32)
+        self.search_edit.setPlaceholderText("🔍 Lọc nhanh theo ngày (ví dụ: 2026-07-25)…")
         self.search_edit.setClearButtonEnabled(True)
 
+        self.select_all_btn = QPushButton("☑ Chọn tất cả")
+        self.select_all_btn.setFixedHeight(32)
+        self.select_all_btn.setToolTip("Chọn tất cả các ngày đang hiển thị trong danh sách")
+
+        self.deselect_all_btn = QPushButton("☐ Bỏ chọn")
+        self.deselect_all_btn.setFixedHeight(32)
+        self.deselect_all_btn.setToolTip("Bỏ chọn toàn bộ")
+
+        self.counter_label = QLabel("Đã chọn: 0 ngày")
+        self.counter_label.setStyleSheet("color: #4b5563; font-weight: 600; font-size: 12px; padding: 0 4px;")
+
         filter_row.addWidget(self.bucket_combo)
-        filter_row.addSpacing(8)
         filter_row.addWidget(self.search_edit, 1)
+        filter_row.addWidget(self.select_all_btn)
+        filter_row.addWidget(self.deselect_all_btn)
+        filter_row.addWidget(self.counter_label)
         lay.addLayout(filter_row)
 
+        tip_banner = QLabel("💡 Mẹo: Click vào bất kỳ vị trí trên dòng để chọn/bỏ chọn • Double-click vào 1 ngày để tải & mở riêng ngày đó.")
+        tip_banner.setStyleSheet(
+            "background-color: palette(alternate-base); border: 1px solid palette(mid); "
+            "border-radius: 4px; padding: 6px 10px; font-size: 12px; color: palette(window-text);"
+        )
+        lay.addWidget(tip_banner)
+
         # --- Days / Packages Tree ---
-        self.tree = QTreeWidget()
+        self.tree = MinioTreeWidget()
         self.tree.setColumnCount(2)
         self.tree.setHeaderLabels(["Ngày / Gói log trên MinIO", "Trạng thái trên máy"])
         self.tree.setRootIsDecorated(False)
@@ -197,19 +278,72 @@ class MinioDialog(QDialog):
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
         self.tree.itemChanged.connect(self._update_buttons)
+        self.tree.setStyleSheet("""
+            QTreeWidget {
+                font-size: 13px;
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+            }
+            QTreeWidget::item {
+                padding: 6px 8px;
+                border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+            }
+            QTreeWidget::item:hover {
+                background-color: rgba(59, 130, 246, 0.08);
+            }
+            QTreeWidget::item:selected {
+                background-color: rgba(59, 130, 246, 0.20);
+                color: palette(text);
+            }
+            QTreeWidget::indicator {
+                width: 18px;
+                height: 18px;
+                margin-right: 8px;
+            }
+            QHeaderView::section {
+                padding: 8px 10px;
+                font-weight: 600;
+                font-size: 13px;
+                border: none;
+                border-bottom: 1px solid palette(mid);
+                background: palette(window);
+            }
+        """)
         lay.addWidget(self.tree, 1)
 
         # --- Footer Status & Buttons ---
         footer = QHBoxLayout()
         self.status_label = QLabel("Nhập tài khoản hoặc cấu hình .env rồi bấm 'Kết nối & Lấy danh sách'.")
-        self.status_label.setStyleSheet("color: gray;")
+        self.status_label.setStyleSheet("color: gray; font-size: 12px;")
         self.delete_local_btn = QPushButton("🗑 Xoá cứng bản đã lưu")
         self.delete_local_btn.setToolTip("Xoá vĩnh viễn file log của ngày đang chọn khỏi ổ cứng")
+        self.delete_local_btn.setFixedHeight(36)
+        self.delete_local_btn.setStyleSheet("padding: 6px 14px; font-size: 12px;")
         self.delete_local_btn.setEnabled(False)
+
         self.download_btn = QPushButton("⬇ Tải về && Mở ngày đã chọn")
-        self.download_btn.setStyleSheet("font-weight: 600; padding: 6px 16px;")
+        self.download_btn.setFixedHeight(36)
+        self.download_btn.setStyleSheet("""
+            QPushButton {
+                font-weight: 600;
+                font-size: 13px;
+                padding: 6px 20px;
+                background-color: #2563eb;
+                color: white;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #1d4ed8;
+            }
+            QPushButton:disabled {
+                background-color: #9ca3af;
+                color: #f3f4f6;
+            }
+        """)
         self.download_btn.setEnabled(False)
         close_btn = QPushButton("Đóng")
+        close_btn.setFixedHeight(36)
+        close_btn.setStyleSheet("padding: 6px 16px; font-size: 12px;")
 
         footer.addWidget(self.status_label, 1)
         footer.addWidget(self.delete_local_btn)
@@ -222,7 +356,9 @@ class MinioDialog(QDialog):
         open_dir_btn.clicked.connect(self._open_storage_dir)
         self.connect_btn.clicked.connect(self.fetch_list)
         self.bucket_combo.activated.connect(self._on_bucket_activated)
-        self.search_edit.textChanged.connect(self._populate_tree)
+        self.search_edit.textChanged.connect(self._filter_tree)
+        self.select_all_btn.clicked.connect(self._select_all)
+        self.deselect_all_btn.clicked.connect(self._deselect_all)
         self.tree.itemSelectionChanged.connect(self._update_buttons)
         self.delete_local_btn.clicked.connect(self._hard_delete_selected_dates)
         self.download_btn.clicked.connect(self.download_selected)
@@ -328,26 +464,53 @@ class MinioDialog(QDialog):
         QMessageBox.warning(self, "Không lấy được danh sách MinIO", err)
 
     def _populate_tree(self):
-        filt = self.search_edit.text().strip().lower()
         saved_dates = {it.date for it in self.library.items if it.date}
 
         self.tree.blockSignals(True)
         self.tree.clear()
         for item in self._items:
             disp = item.display_name
-            if filt and filt not in disp.lower():
-                continue
             icon = "📁 " if item.is_folder else "📄 "
             is_saved = disp in saved_dates
-            status = "✓ Đã có trên máy" if is_saved else ""
+            status = "✓ Đã có trên máy" if is_saved else "☁ Trên MinIO (chưa tải)"
             node = QTreeWidgetItem([f"{icon}{disp}", status])
             node.setData(0, Qt.UserRole, item.name)
             node.setData(0, Qt.UserRole + 1, disp)
             node.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
             node.setCheckState(0, Qt.Unchecked)
+            node.setToolTip(0, f"Click để chọn/bỏ chọn • Double-click để tải riêng ngày {disp}")
+            node.setToolTip(1, "File log đã lưu trên máy" if is_saved else "File log trên MinIO, cần tải về để mở")
             if is_saved:
                 node.setForeground(1, SAVED_COLOR)
+            else:
+                node.setForeground(1, QColor("#888888"))
             self.tree.addTopLevelItem(node)
+        self.tree.blockSignals(False)
+        self._filter_tree()
+
+    def _filter_tree(self):
+        filt = self.search_edit.text().strip().lower()
+        for i in range(self.tree.topLevelItemCount()):
+            node = self.tree.topLevelItem(i)
+            disp = node.data(0, Qt.UserRole + 1) or ""
+            hide = bool(filt and filt not in disp.lower())
+            node.setHidden(hide)
+        self._update_buttons()
+
+    def _select_all(self):
+        self.tree.blockSignals(True)
+        for i in range(self.tree.topLevelItemCount()):
+            node = self.tree.topLevelItem(i)
+            if not node.isHidden():
+                node.setCheckState(0, Qt.Checked)
+        self.tree.blockSignals(False)
+        self._update_buttons()
+
+    def _deselect_all(self):
+        self.tree.blockSignals(True)
+        for i in range(self.tree.topLevelItemCount()):
+            node = self.tree.topLevelItem(i)
+            node.setCheckState(0, Qt.Unchecked)
         self.tree.blockSignals(False)
         self._update_buttons()
 
@@ -357,10 +520,7 @@ class MinioDialog(QDialog):
             node = self.tree.topLevelItem(i)
             if node.checkState(0) == Qt.Checked:
                 checked.append(node.data(0, Qt.UserRole))
-        if checked:
-            return checked
-        cur = self.tree.currentItem()
-        return [cur.data(0, Qt.UserRole)] if cur else []
+        return checked
 
     def _selected_saved_items(self):
         prefixes = self._selected_prefixes()
@@ -373,10 +533,17 @@ class MinioDialog(QDialog):
             self.delete_local_btn.setEnabled(False)
             return
         sel = self._selected_prefixes()
+        total_items = self.tree.topLevelItemCount()
         self.download_btn.setEnabled(bool(sel))
         self.delete_local_btn.setEnabled(bool(self._selected_saved_items()))
+
+        if hasattr(self, "counter_label"):
+            self.counter_label.setText(f"Đã chọn: {len(sel)} / {total_items} ngày")
+
         if len(sel) > 1:
-            self.download_btn.setText(f"⬇ Tải về && Mở ({len(sel)} ngày)")
+            self.download_btn.setText(f"⬇ Tải về && Mở ({len(sel)} ngày đã chọn)")
+        elif len(sel) == 1:
+            self.download_btn.setText("⬇ Tải về && Mở 1 ngày đã chọn")
         else:
             self.download_btn.setText("⬇ Tải về && Mở ngày đã chọn")
 
@@ -388,7 +555,7 @@ class MinioDialog(QDialog):
         disp = node.data(0, Qt.UserRole + 1)
         saved = [it for it in self.library.items if it.date == disp]
         menu = QMenu(self)
-        menu.addAction(f"⬇ Tải về & Mở ({disp})", lambda: self._start_download([prefix]))
+        menu.addAction(f"⬇ Tải về & Mở riêng ngày {disp}", lambda: self._start_download([prefix]))
         if saved:
             menu.addAction("Mở vị trí file đã lưu", lambda: open_in_explorer(self.library.path_of(saved[0])))
             menu.addSeparator()
@@ -424,7 +591,10 @@ class MinioDialog(QDialog):
         if self._dl_worker and self._dl_worker.isRunning():
             return
         prefix = item.data(0, Qt.UserRole)
+        disp = item.data(0, Qt.UserRole + 1) or ""
         if prefix:
+            item.setCheckState(0, Qt.Checked)
+            self.status_label.setText(f"Đang tải riêng gói ngày {disp}…")
             self._start_download([prefix])
 
     def download_selected(self):
