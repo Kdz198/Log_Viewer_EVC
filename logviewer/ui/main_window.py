@@ -9,20 +9,37 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QFr
                                QMainWindow, QMenu, QMessageBox, QSplitter, QTableView, QVBoxLayout,
                                QWidget)
 
-from .. import __version__
-from ..library import Library
-from ..loader import HOUR_RE, load_source, merged_text
-from ..models import LogTableModel
-from ..parser import VN_TZ, LogEntry, parse_text
-from .detail_panel import DetailPanel
-from .filter_bar import FilterBar
-from .library_panel import LibraryPanel
-from .log_delegate import LogDelegate
+try:
+    from .. import __version__
+    from ..library import Library
+    from ..loader import HOUR_RE, load_source, merged_text
+    from ..models import LogTableModel
+    from ..parser import VN_TZ, LogEntry, parse_text
+    from .detail_panel import DetailPanel
+    from .filter_bar import FilterBar
+    from .library_panel import LibraryPanel
+    from .loading_overlay import LoadingOverlay
+    from .log_delegate import LogDelegate
+    from .minio_dialog import MinioDialog
+except (ImportError, ValueError):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+    from logviewer import __version__
+    from logviewer.library import Library
+    from logviewer.loader import HOUR_RE, load_source, merged_text
+    from logviewer.models import LogTableModel
+    from logviewer.parser import VN_TZ, LogEntry, parse_text
+    from logviewer.ui.detail_panel import DetailPanel
+    from logviewer.ui.filter_bar import FilterBar
+    from logviewer.ui.library_panel import LibraryPanel
+    from logviewer.ui.loading_overlay import LoadingOverlay
+    from logviewer.ui.log_delegate import LogDelegate
+    from logviewer.ui.minio_dialog import MinioDialog
 
 
 class LoadWorker(QThread):
     progress = Signal(str)
-    loaded = Signal(object, object)  # entries, chunks
+    loaded = Signal(object, object, object)  # entries, chunks, per_file
     failed = Signal(str)
 
     def __init__(self, paths: list):
@@ -32,24 +49,34 @@ class LoadWorker(QThread):
     def run(self):
         try:
             chunks = []
-            for path in self.paths:
-                chunks += load_source(path, self.progress.emit)
-            self.progress.emit("Đang phân tích log…")
             entries: list[LogEntry] = []
-            for name, text in chunks:
-                entries += parse_text(text, source=name)
-            self.loaded.emit(entries, chunks)
+            per_file: list[tuple[Path, list, list[LogEntry]]] = []
+            for path in self.paths:
+                f_chunks = load_source(path, self.progress.emit)
+                f_entries: list[LogEntry] = []
+                total_chunks = len(f_chunks)
+                for idx, (name, text) in enumerate(f_chunks, 1):
+                    self.progress.emit(f"Đang phân tích {Path(name).name} ({idx}/{total_chunks})")
+                    f_entries += parse_text(text, source=name)
+                chunks += f_chunks
+                entries += f_entries
+                per_file.append((Path(path), f_chunks, f_entries))
+            self.loaded.emit(entries, chunks, per_file)
         except Exception as ex:  # shown to the user, never crash the UI
             self.failed.emit(f"{type(ex).__name__}: {ex}")
 
 
-def detect_date(chunks, entries: list[LogEntry]) -> str:
+def detect_date(chunks, entries: list[LogEntry], source: Path | None = None) -> str:
     """Day of a log bundle: from the hourly file names, else the most common VN date."""
     for name, _ in chunks:
         if m := HOUR_RE.search(name):
             return m.group(1)
     days = Counter(e.ts.astimezone(VN_TZ).date().isoformat() for e in entries if e.ts and e.ts.tzinfo)
-    return days.most_common(1)[0][0] if days else ""
+    if days:
+        return days.most_common(1)[0][0]
+    if source and (m := re.search(r"(\d{4}-\d{2}-\d{2})", source.name)):
+        return m.group(1)
+    return ""
 
 
 class MainWindow(QMainWindow):
@@ -65,6 +92,7 @@ class MainWindow(QMainWindow):
         self.chunks: list = []
         self.worker: LoadWorker | None = None
         self._import_from: Path | None = None
+        self._import_many: bool = False
         self._loading_ids: list[str] = []
         self._queued: tuple | None = None
 
@@ -106,7 +134,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.detail)
         splitter.setSizes([560, 260])
 
-        self.empty_hint = QLabel("Kéo thả file .zip / .tar.gz / .log vào đây, hoặc Ctrl+O để mở\n"
+        self.empty_hint = QLabel("Kéo thả file .zip / .tar.gz / .log vào đây, Ctrl+O mở file, hoặc Ctrl+M tải từ MinIO\n"
                                  "Các ngày đã mở sẽ được lưu ở cột bên trái")
         self.empty_hint.setAlignment(Qt.AlignCenter)
         self.empty_hint.setStyleSheet("font-size: 16px; color: gray; padding: 40px;")
@@ -121,6 +149,7 @@ class MainWindow(QMainWindow):
         self.library_panel = LibraryPanel(self.library)
         self.library_panel.open_items.connect(self.open_items)
         self.library_panel.removed.connect(self._on_library_removed)
+        self.library_panel.open_minio.connect(self.open_minio_dialog)
         main_split = QSplitter(Qt.Horizontal)
         main_split.addWidget(self.library_panel)
         main_split.addWidget(viewer)
@@ -134,6 +163,7 @@ class MainWindow(QMainWindow):
         self.filter_bar.changed.connect(self.apply_filters)
         self.model.tz = VN_TZ
         self._build_menu()
+        self.loading_overlay = LoadingOverlay(self)
 
     # ---------- menu ----------
     def _build_menu(self):
@@ -146,6 +176,9 @@ class MainWindow(QMainWindow):
             return a
 
         m = self.menuBar().addMenu("&File")
+        act(m, "Tải log từ MinIO…", self.open_minio_dialog, "Ctrl+M")
+        act(m, "Đổi thư mục lưu log…", self.change_storage_dialog)
+        m.addSeparator()
         act(m, "Mở file…", self.open_dialog, "Ctrl+O")
         act(m, "Mở thư mục…", self.open_folder_dialog, "Ctrl+Shift+O")
         m.addSeparator()
@@ -155,7 +188,8 @@ class MainWindow(QMainWindow):
         act(m, "Thoát", self.close, "Ctrl+Q")
 
         m = self.menuBar().addMenu("&Xem")
-        act(m, "Tìm kiếm", self._focus_search, "Ctrl+F")
+        act(m, "Tìm kiếm (chi tiết / tổng)", self._focus_search, "Ctrl+F")
+        act(m, "Tìm kiếm tổng (bộ lọc)", self._focus_global_search, "Ctrl+Shift+F")
         act(m, "ERROR tiếp theo", lambda: self._jump_level("ERROR", +1), "F8")
         act(m, "ERROR trước đó", lambda: self._jump_level("ERROR", -1), "Shift+F8")
         act(m, "WARN tiếp theo", lambda: self._jump_level("WARN", +1), "F7")
@@ -163,6 +197,51 @@ class MainWindow(QMainWindow):
         act(m, "Xoá tất cả bộ lọc", self.clear_filters, "Ctrl+R")
 
     # ---------- loading ----------
+    def open_minio_dialog(self):
+        dlg = MinioDialog(self.library, self)
+        dlg.files_downloaded.connect(self.open_downloaded_paths)
+        dlg.storage_changed.connect(self._on_storage_changed)
+        dlg.exec()
+
+    def change_storage_dialog(self):
+        new_dir = QFileDialog.getExistingDirectory(
+            self, "Chọn thư mục lưu trữ log", str(self.library.root)
+        )
+        if not new_dir:
+            return
+        target = Path(new_dir).resolve()
+        if target == self.library.root.resolve():
+            return
+        try:
+            copied = self.library.change_storage_dir(target)
+        except OSError as ex:
+            QMessageBox.critical(self, "Không đổi được thư mục lưu", f"Lỗi khi chuyển file log:\n{ex}")
+            return
+        self._on_storage_changed()
+        QMessageBox.information(
+            self,
+            "Đã đổi nơi lưu log",
+            f"Đã chuyển thư mục lưu log sang:\n{self.library.root}\n\n"
+            f"Đã tự động copy {copied} file log từ thư mục cũ sang thư mục mới.",
+        )
+
+    def _on_storage_changed(self):
+        self.library_panel.refresh()
+        existing_ids = {i.id for i in self.library.items}
+        remaining = list(self.library_panel.current_ids & existing_ids)
+        self.library_panel.set_current(remaining)
+        if not remaining and self.model.entries:
+            self._clear_current_view()
+
+    def open_downloaded_paths(self, paths: list[str]):
+        if not paths:
+            return
+        if len(paths) == 1:
+            self._start_load(paths, Path(paths[0]).name, import_from=Path(paths[0]))
+        else:
+            label = f"{len(paths)} ngày từ MinIO"
+            self._start_load(paths, label, import_many=True)
+
     def open_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Chọn file log", "", "Log (*.zip *.tar.gz *.tgz *.gz *.log *.txt);;Tất cả (*.*)")
@@ -188,28 +267,44 @@ class MainWindow(QMainWindow):
         self._start_load([self.library.path_of(i) for i in items], label, ids=[i.id for i in items])
 
     def _start_load(self, paths: list, label: str, import_from: Path | None = None,
-                    ids: list[str] | None = None):
+                    ids: list[str] | None = None, import_many: bool = False):
         if self.worker and self.worker.isRunning():
-            self._queued = (paths, label, import_from, ids)  # latest request wins
+            self._queued = (paths, label, import_from, ids, import_many)  # latest request wins
             return
         self._pending_label = label
         self._import_from = import_from
+        self._import_many = import_many
         self._loading_ids = ids or []
         self.status.setText(f"Đang mở {label}…")
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.loading_overlay.start(f"Đang mở {label}", "Đang chuẩn bị đọc dữ liệu…")
         self.worker = LoadWorker([str(p) for p in paths])
-        self.worker.progress.connect(self.status.setText)
+        self.worker.progress.connect(self._on_load_progress)
         self.worker.loaded.connect(self._on_loaded)
         self.worker.failed.connect(self._on_failed)
         self.worker.finished.connect(self._on_worker_finished)
         self.worker.start()
 
-    def _on_loaded(self, entries: list[LogEntry], chunks):
+    def _on_load_progress(self, msg: str):
+        self.status.setText(msg)
+        self.loading_overlay.set_status(msg)
+
+    def _on_loaded(self, entries: list[LogEntry], chunks, per_file: list | None = None):
         self.chunks = chunks
         self.current_label = self._pending_label
         ids = self._loading_ids
         if self._import_from is not None:
             ids = self._save_to_library(self._import_from, chunks, entries) or ids
+        elif self._import_many and per_file:
+            saved_ids = []
+            for src_path, f_chunks, f_entries in per_file:
+                res = self._save_to_library(src_path, f_chunks, f_entries)
+                if res:
+                    saved_ids.extend(res)
+            if saved_ids:
+                ids = saved_ids
+                items = [self.library.get(i) for i in ids if self.library.get(i)]
+                if len(items) > 1:
+                    self.current_label = f"{len(items)} ngày: {items[0].name} → {items[-1].name}"
         elif len(ids) == 1:
             self._refresh_stats(ids[0], entries)
         self.library_panel.set_current(ids)
@@ -224,14 +319,16 @@ class MainWindow(QMainWindow):
         levels = Counter(e.level for e in entries)
         stats = {"entries": len(entries), "errors": levels["ERROR"], "warns": levels["WARN"]}
         try:
-            item, is_new = self.library.import_source(source, detect_date(chunks, entries), stats)
+            item, is_new = self.library.import_source(source, detect_date(chunks, entries, source), stats)
         except OSError as ex:
             QMessageBox.warning(self, "Không lưu được", f"Không lưu được vào danh sách:\n{ex}")
             return None
         self.current_label = item.name
         self.library_panel.refresh()
         self.statusBar().showMessage(
-            f"Đã lưu “{item.name}” vào danh sách" if is_new else f"File này đã có sẵn: “{item.name}”", 5000)
+            f"Đã lưu “{item.name}” vào {self.library.files_dir}" if is_new else f"File này đã có sẵn: “{item.name}”",
+            5000,
+        )
         return [item.id]
 
     def _refresh_stats(self, item_id: str, entries: list[LogEntry]):
@@ -245,15 +342,29 @@ class MainWindow(QMainWindow):
             self.library_panel.refresh()
 
     def _on_library_removed(self, ids: list):
-        self.library_panel.set_current(list(self.library_panel.current_ids - set(ids)))
+        remaining = list(self.library_panel.current_ids - set(ids))
+        self.library_panel.set_current(remaining)
+        if not remaining and self.model.entries:
+            self._clear_current_view()
+
+    def _clear_current_view(self):
+        self.chunks = []
+        self.current_label = ""
+        self.setWindowTitle(f"Log Viewer {__version__}")
+        self.model.set_entries([])
+        self.filter_bar.set_counts(Counter())
+        self.detail.show_entry(None, None)
+        self.empty_hint.show()
+        self.status.setText("Đã xoá file log.")
 
     def _on_worker_finished(self):
-        QApplication.restoreOverrideCursor()
+        self.loading_overlay.stop()
         if self._queued:
             queued, self._queued = self._queued, None
             self._start_load(*queued)
 
     def _on_failed(self, msg: str):
+        self.loading_overlay.stop()
         self.status.setText("Lỗi khi mở file")
         QMessageBox.critical(self, "Không mở được file", msg)
 
@@ -339,6 +450,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Không còn {level} nào {'phía sau' if step > 0 else 'phía trước'}", 3000)
 
     def _focus_search(self):
+        if self.detail.has_entry() and not self.filter_bar.search.hasFocus():
+            self.detail.open_search()
+        else:
+            self._focus_global_search()
+
+    def _focus_global_search(self):
         self.filter_bar.search.setFocus()
         self.filter_bar.search.selectAll()
 
@@ -387,3 +504,12 @@ class MainWindow(QMainWindow):
                 for i in self.model.rows:
                     f.write(self.model.entries[i].raw_text() + "\n")
             self.statusBar().showMessage(f"Đã lưu {len(self.model.rows):,} entry vào {path}", 5000)
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    win = MainWindow()
+    win.show()
+    sys.exit(app.exec())
+

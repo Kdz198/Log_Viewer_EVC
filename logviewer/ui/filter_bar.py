@@ -29,7 +29,7 @@ class FilterBar(QWidget):
             self.level_boxes[lv] = cb
             lay.addWidget(cb)
 
-        self.search = QLineEdit(placeholderText="Tìm kiếm: nội dung, trace ID, mã KH… (Ctrl+F)",
+        self.search = QLineEdit(placeholderText="Tìm kiếm tổng: nội dung, trace ID, mã KH… (Ctrl+Shift+F)",
                                 clearButtonEnabled=True)
         self.regex = QCheckBox("Regex")
         self.case = QCheckBox("Aa")

@@ -2,13 +2,16 @@
 Click a day to open it; tick several days (or a whole month) and they are
 opened merged right away."""
 from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMenu,
-                               QMessageBox, QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QHeaderView, QInputDialog,
+                               QLabel, QMenu, QMessageBox, QPushButton, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from ..library import Library
+from .minio_dialog import open_in_explorer
 
 KIND, KEY = Qt.UserRole, Qt.UserRole + 1
 ERROR_COLOR = QColor("#e5484d")
@@ -24,6 +27,7 @@ def _month_label(date: str) -> str:
 class LibraryPanel(QWidget):
     open_items = Signal(list)  # item ids, 1 = single day, more = merged
     removed = Signal(list)
+    open_minio = Signal()
 
     def __init__(self, library: Library, parent=None):
         super().__init__(parent)
@@ -31,13 +35,19 @@ class LibraryPanel(QWidget):
         self.current_ids: set[str] = set()
         self._toggled = False
 
+        minio_btn = QPushButton("☁ Tải từ MinIO…")
+        minio_btn.setToolTip("Đăng nhập MinIO Console, chọn nơi lưu và tải gói log theo ngày (Ctrl+M)")
+        minio_btn.setStyleSheet("font-weight: 600; padding: 5px 8px;")
+        minio_btn.clicked.connect(self.open_minio)
+
         title = QLabel("Đã lưu")
         title.setStyleSheet("font-weight: 600; font-size: 13px;")
-        hint = QLabel("Click để mở 1 ngày · tick nhiều ngày để gộp")
+        hint = QLabel("Click để mở · tick nhiều ngày để gộp · Del để xoá cứng")
         hint.setStyleSheet("color: gray; font-size: 11px;")
         head = QVBoxLayout()
         head.setContentsMargins(10, 8, 8, 6)
-        head.setSpacing(2)
+        head.setSpacing(4)
+        head.addWidget(minio_btn)
         head.addWidget(title)
         head.addWidget(hint)
 
@@ -56,6 +66,7 @@ class LibraryPanel(QWidget):
         self.tree.itemChanged.connect(self._on_check_changed)
         self.tree.itemClicked.connect(self._on_clicked)
         self.tree.itemActivated.connect(self._on_clicked)
+        self.tree.installEventFilter(self)
 
         # ticking a month fires one itemChanged per day, so open once they settle
         self._open_timer = QTimer(self, singleShot=True, interval=250)
@@ -75,7 +86,7 @@ class LibraryPanel(QWidget):
         bar_lay.addWidget(clear_btn)
         self.bar.hide()
 
-        self.empty = QLabel("Chưa có ngày nào.\nMở 1 file log, app sẽ tự lưu vào đây.")
+        self.empty = QLabel("Chưa có ngày nào.\nMở 1 file log hoặc tải từ MinIO, app sẽ tự lưu vào đây.")
         self.empty.setAlignment(Qt.AlignCenter)
         self.empty.setStyleSheet("color: gray; padding: 20px;")
         self.empty.setWordWrap(True)
@@ -114,8 +125,14 @@ class LibraryPanel(QWidget):
             node.setCheckState(0, Qt.Checked if it.id in checked else Qt.Unchecked)
             node.setForeground(1, ERROR_COLOR)
             node.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
-            node.setToolTip(0, f"{it.original}\n{it.entries:,} entry · {it.errors:,} ERROR · {it.warns:,} WARN\n"
-                               f"Import lúc {it.imported_at.replace('T', ' ')}")
+            stored_path = self.lib.path_of(it)
+            node.setToolTip(
+                0,
+                f"File gốc: {it.original}\n"
+                f"Nơi lưu: {stored_path}\n"
+                f"{it.entries:,} entry · {it.errors:,} ERROR · {it.warns:,} WARN\n"
+                f"Import lúc {it.imported_at.replace('T', ' ')}",
+            )
             node.setToolTip(1, f"{it.errors:,} ERROR")
             month_node.addChild(node)
         self.tree.blockSignals(False)
@@ -186,32 +203,94 @@ class LibraryPanel(QWidget):
             self.lib.rename(item_id, name.strip())
             self.refresh()
 
-    def _remove(self, ids: list[str]):
-        names = ", ".join(self.lib.get(i).name for i in ids[:5]) + ("…" if len(ids) > 5 else "")
-        if QMessageBox.question(self, "Xoá khỏi danh sách",
-                                f"Xoá {len(ids)} ngày đã lưu ({names})?\n"
-                                "File gốc bạn đã tải về không bị ảnh hưởng.") == QMessageBox.Yes:
-            self.lib.remove(ids)
+    def _hard_remove(self, ids: list[str]):
+        items = [self.lib.get(i) for i in ids if self.lib.get(i)]
+        if not items:
+            return
+        names = ", ".join(it.name for it in items[:5]) + ("…" if len(items) > 5 else "")
+        paths_preview = "\n".join(f"• {self.lib.path_of(it)}" for it in items[:4])
+        if len(items) > 4:
+            paths_preview += f"\n… và {len(items) - 4} file khác"
+
+        ext_sources = [Path(it.source_path) for it in items if it.source_path and Path(it.source_path).is_file()]
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Xoá cứng file log")
+        box.setText(f"Bạn có chắc muốn XOÁ CỨNG (xoá vĩnh viễn khỏi ổ cứng) {len(items)} ngày ({names})?")
+        box.setInformativeText(f"File trong thư mục lưu sẽ bị xoá vĩnh viễn:\n{paths_preview}")
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+
+        del_ext_cb = None
+        if ext_sources:
+            del_ext_cb = QCheckBox(f"Xoá luôn cả file gốc lúc import ở ngoài ({len(ext_sources)} file)")
+            del_ext_cb.setChecked(True)
+            box.setCheckBox(del_ext_cb)
+
+        if box.exec() == QMessageBox.Yes:
+            del_orig = bool(del_ext_cb and del_ext_cb.isChecked())
+            self.lib.remove(ids, delete_files=True, delete_original=del_orig)
             self.refresh()
             self.removed.emit(ids)
+
+    def _soft_remove(self, ids: list[str]):
+        items = [self.lib.get(i) for i in ids if self.lib.get(i)]
+        if not items:
+            return
+        names = ", ".join(it.name for it in items[:5]) + ("…" if len(items) > 5 else "")
+        if QMessageBox.question(
+            self,
+            "Bỏ khỏi danh sách",
+            f"Bỏ {len(items)} ngày ({names}) khỏi danh sách hiển thị?\n"
+            f"(File log trong thư mục lưu {self.lib.files_dir} vẫn được giữ lại)",
+        ) == QMessageBox.Yes:
+            self.lib.remove(ids, delete_files=False)
+            self.refresh()
+            self.removed.emit(ids)
+
+    def eventFilter(self, obj, event):
+        if obj is self.tree and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Delete:
+            checked = self.checked_ids()
+            if checked:
+                self._hard_remove(checked)
+                return True
+            cur = self.tree.currentItem()
+            if cur and cur.data(0, KIND) == "item":
+                self._hard_remove([cur.data(0, KEY)])
+                return True
+        return super().eventFilter(obj, event)
 
     def _context_menu(self, pos):
         node = self.tree.itemAt(pos)
         if node is None:
+            menu = QMenu(self)
+            menu.addAction("Mở thư mục lưu log…", lambda: open_in_explorer(self.lib.files_dir))
+            menu.exec(self.tree.viewport().mapToGlobal(pos))
             return
         menu = QMenu(self)
         if node.data(0, KIND) == "month":
             ids = [node.child(j).data(0, KEY) for j in range(node.childCount())]
             menu.addAction(f"Xem gộp cả {node.data(0, KEY).lower()}", lambda: self.open_items.emit(ids))
+            menu.addSeparator()
+            menu.addAction(f"🗑 Xoá cứng cả {node.data(0, KEY).lower()}…", lambda: self._hard_remove(ids))
         else:
             item_id = node.data(0, KEY)
+            it = self.lib.get(item_id)
             checked = self.checked_ids()
             menu.addAction("Mở", lambda: self.open_items.emit([item_id]))
             if len(checked) > 1:
                 menu.addAction(f"Xem gộp {len(checked)} ngày đã chọn", lambda: self.open_items.emit(checked))
+            if it:
+                menu.addAction("Mở vị trí file trong Explorer", lambda: open_in_explorer(self.lib.path_of(it)))
             menu.addAction("Đổi tên…", lambda: self._rename(item_id))
             menu.addSeparator()
-            menu.addAction("Xoá khỏi danh sách", lambda: self._remove([item_id]))
+            menu.addAction("🗑 Xoá cứng file (xoá vĩnh viễn khỏi ổ cứng)…", lambda: self._hard_remove([item_id]))
             if len(checked) > 1:
-                menu.addAction(f"Xoá {len(checked)} ngày đã chọn", lambda: self._remove(checked))
+                menu.addAction(
+                    f"🗑 Xoá cứng {len(checked)} ngày đã chọn…",
+                    lambda: self._hard_remove(checked),
+                )
+            menu.addAction("Bỏ khỏi danh sách (giữ lại file)", lambda: self._soft_remove([item_id]))
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
