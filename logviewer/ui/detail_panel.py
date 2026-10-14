@@ -96,9 +96,8 @@ class DetailPanel(QWidget):
         if e.trace_id:
             head.append(f"Trace ID  : {e.trace_id}")
         head.append(f"File      : {e.source}")
-        body = pretty_message(e.message)
-        if e.extra:
-            body += "\n" + e.extra
+        raw_body = f"{e.message}\n{e.extra}" if e.extra else e.message
+        body = pretty_message(raw_body)
         self.editor.setPlainText("\n".join(head) + "\n" + "─" * 80 + "\n" + body)
         if self.search_bar.isVisible() and self.search.text():
             self._run_search()

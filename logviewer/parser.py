@@ -101,17 +101,107 @@ def local_hour(e: LogEntry, tz: tzinfo | None) -> int | None:
     return ts.hour
 
 
-def pretty_message(msg: str) -> str:
-    """Pretty-print JSON segments like `Headers: {...} | Payload: [...]`."""
-    out = []
-    for part in msg.split(" | "):
-        key, sep, val = part.partition(": ")
-        val = val.strip()
-        if sep and val[:1] in "{[":
-            try:
-                out.append(f"{key}:\n{json.dumps(json.loads(val), indent=2, ensure_ascii=False)}")
+LABEL_JSON_RE = re.compile(r"^([A-Za-z0-9_ -]+:\s*)([{\[].*)$")
+
+
+def _try_format_json(s: str) -> str | None:
+    s_strip = s.strip()
+    if not (s_strip.startswith("{") and s_strip.endswith("}")) and not (s_strip.startswith("[") and s_strip.endswith("]")):
+        return None
+    try:
+        obj = json.loads(s_strip, strict=False)
+        return json.dumps(obj, indent=2, ensure_ascii=False)
+    except Exception:
+        return None
+
+
+def pretty_message(text: str) -> str:
+    """Intelligently detects and pretty-prints JSON segments (single-line or multiline, with or without labels)."""
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    result_lines: list[str] = []
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+
+        # 1. Pipe-separated single-line log: e.g. "POST /api | Headers: {...} | Payload: [...]"
+        if " | " in line:
+            parts = line.split(" | ")
+            formatted_parts = []
+            has_formatted = False
+            for part in parts:
+                key, sep, val = part.partition(": ")
+                val_clean = val.strip()
+                if sep and val_clean[:1] in "{[":
+                    fmt = _try_format_json(val_clean)
+                    if fmt:
+                        formatted_parts.append(f"{key}:\n{fmt}")
+                        has_formatted = True
+                        continue
+                formatted_parts.append(part)
+            if has_formatted:
+                result_lines.append("\n".join(formatted_parts))
+                i += 1
                 continue
-            except ValueError:
-                pass
-        out.append(part)
-    return "\n".join(out)
+
+        # 2. Line with "Label: JSON" on same line, e.g. "Payload: [{"eventId": ...}]"
+        m = LABEL_JSON_RE.match(line)
+        if m:
+            prefix, first_part = m.groups()
+            open_char = first_part.strip()[0]
+            close_char = "}" if open_char == "{" else "]"
+            accum = [first_part]
+            matched = False
+            for j in range(i, min(n, i + 1000)):
+                if j > i:
+                    accum.append(lines[j])
+                candidate = "\n".join(accum).strip()
+                if candidate.endswith(close_char):
+                    fmt = _try_format_json(candidate)
+                    if fmt:
+                        result_lines.append(f"{prefix.strip()}\n{fmt}")
+                        i = j + 1
+                        matched = True
+                        break
+            if matched:
+                continue
+
+        # 3. Label line "Headers:" followed by JSON on next line "{", or standalone JSON block
+        label_prefix = ""
+        block_start_idx = i
+        if stripped.endswith(":") and not stripped.startswith("at ") and not stripped.startswith("Caused by"):
+            if i + 1 < n and lines[i + 1].strip()[:1] in "{[":
+                label_prefix = line
+                block_start_idx = i + 1
+
+        curr_strip = lines[block_start_idx].strip()
+        if curr_strip[:1] in ("{", "["):
+            open_char = curr_strip[0]
+            close_char = "}" if open_char == "{" else "]"
+            accum = []
+            matched = False
+            for j in range(block_start_idx, min(n, block_start_idx + 1000)):
+                accum.append(lines[j])
+                candidate = "\n".join(accum).strip()
+                if candidate.endswith(close_char):
+                    fmt = _try_format_json(candidate)
+                    if fmt:
+                        if label_prefix:
+                            result_lines.append(label_prefix)
+                        result_lines.append(fmt)
+                        i = j + 1
+                        matched = True
+                        break
+            if matched:
+                continue
+
+        result_lines.append(line)
+        i += 1
+
+    return "\n".join(result_lines)
+
