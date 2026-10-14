@@ -104,6 +104,66 @@ def local_hour(e: LogEntry, tz: tzinfo | None) -> int | None:
 LABEL_JSON_RE = re.compile(r"^([A-Za-z0-9_ -]+:\s*)([{\[].*)$")
 
 
+def split_log_segments(line: str) -> list[str]:
+    """Split line by ' | ' only when outside of JSON quotes, braces, and brackets."""
+    parts = []
+    current = []
+    in_str = False
+    escape = False
+    brace_depth = 0
+    bracket_depth = 0
+    i = 0
+    n = len(line)
+
+    while i < n:
+        c = line[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_str = False
+            current.append(c)
+            i += 1
+            continue
+
+        if c == '"':
+            in_str = True
+            current.append(c)
+            i += 1
+        elif c == "{":
+            brace_depth += 1
+            current.append(c)
+            i += 1
+        elif c == "}":
+            if brace_depth > 0:
+                brace_depth -= 1
+            current.append(c)
+            i += 1
+        elif c == "[":
+            bracket_depth += 1
+            current.append(c)
+            i += 1
+        elif c == "]":
+            if bracket_depth > 0:
+                bracket_depth -= 1
+            current.append(c)
+            i += 1
+        elif c == " " and line[i:i+3] == " | " and brace_depth == 0 and bracket_depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+            i += 3
+        else:
+            current.append(c)
+            i += 1
+
+    if current:
+        parts.append("".join(current).strip())
+
+    return parts
+
+
 def _try_format_json(s: str) -> str | None:
     s_strip = s.strip()
     if not (s_strip.startswith("{") and s_strip.endswith("}")) and not (s_strip.startswith("[") and s_strip.endswith("]")):
@@ -129,9 +189,10 @@ def pretty_message(text: str) -> str:
         line = lines[i]
         stripped = line.strip()
 
-        # 1. Pipe-separated single-line log: e.g. "POST /api | Headers: {...} | Payload: [...]"
+        # 1. Pipe-separated log line: e.g. "POST /api | Headers: {...} | Payload: [...]"
+        # Use JSON-aware splitting so that ' | ' inside JSON strings (e.g. ticketFace) doesn't break the JSON!
         if " | " in line:
-            parts = line.split(" | ")
+            parts = split_log_segments(line)
             formatted_parts = []
             has_formatted = False
             for part in parts:
