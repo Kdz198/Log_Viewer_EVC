@@ -15,12 +15,14 @@ try:
     from ..minio_client import (MinioConfig, MinioConsoleClient, MinioItem, load_minio_config,
                                 save_minio_config)
     from .loading_overlay import LoadingOverlay
+    from .theme import get_app_stylesheet
 except (ImportError, ValueError):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
     from logviewer.library import Library
     from logviewer.minio_client import (MinioConfig, MinioConsoleClient, MinioItem, load_minio_config,
                                         save_minio_config)
     from logviewer.ui.loading_overlay import LoadingOverlay
+    from logviewer.ui.theme import get_app_stylesheet
 
 SAVED_COLOR = QColor("#16a34a")
 _ACTIVE_WORKERS: set[QThread] = set()
@@ -157,6 +159,7 @@ class MinioDialog(QDialog):
         self.setWindowTitle("Tải log từ MinIO Console & Cấu hình nơi lưu trữ")
         self.resize(920, 720)
         self.setMinimumSize(840, 600)
+        self.setStyleSheet(get_app_stylesheet())
         self.library = library
         self.cfg = load_minio_config()
         self._items: list[MinioItem] = []
