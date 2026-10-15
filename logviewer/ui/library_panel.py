@@ -1,20 +1,23 @@
 """Left sidebar: saved days, auto-grouped by month.
 Click a day to open it; tick several days (or a whole month) and they are
-opened merged right away."""
+opened merged right away.
+"""
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QHeaderView, QInputDialog,
-                               QLabel, QMenu, QMessageBox, QPushButton, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFrame, QHBoxLayout,
+                               QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox,
+                               QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+                               QWidget)
 
 from ..library import Library
 from .minio_dialog import open_in_explorer
+from .theme import Theme, is_dark_mode
 
 KIND, KEY = Qt.UserRole, Qt.UserRole + 1
-ERROR_COLOR = QColor("#e5484d")
+ERROR_COLOR = QColor(Theme.ERROR)
 
 
 def _month_label(date: str) -> str:
@@ -34,33 +37,60 @@ class LibraryPanel(QWidget):
         self.lib = library
         self.current_ids: set[str] = set()
         self._toggled = False
+        self.setObjectName("libraryPanel")
 
-        minio_btn = QPushButton("☁ Tải từ MinIO…")
+        # --- Header Section ---
+        head = QVBoxLayout()
+        head.setContentsMargins(12, 12, 12, 8)
+        head.setSpacing(8)
+
+        # Primary MinIO Button
+        minio_btn = QPushButton("☁  Tải từ MinIO…")
         minio_btn.setToolTip("Đăng nhập MinIO Console, chọn nơi lưu và tải gói log theo ngày (Ctrl+M)")
-        minio_btn.setStyleSheet("font-weight: 600; padding: 5px 8px;")
+        minio_btn.setCursor(Qt.PointingHandCursor)
+        minio_btn.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #2563eb;"
+            "  color: #ffffff;"
+            "  border: none;"
+            "  border-radius: 8px;"
+            "  padding: 8px 12px;"
+            "  font-weight: 600;"
+            "  font-size: 12px;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: #1d4ed8;"
+            "}"
+            "QPushButton:pressed {"
+            "  background-color: #1e40af;"
+            "}"
+        )
         minio_btn.clicked.connect(self.open_minio)
 
-        title = QLabel("Đã lưu")
+        title_row = QHBoxLayout()
+        title = QLabel("Lịch sử log đã lưu")
         title.setStyleSheet("font-weight: 600; font-size: 13px;")
-        hint = QLabel("Click để mở · tick nhiều ngày để gộp · Del để xoá cứng")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+
+        hint = QLabel("Click để mở · Tick để gộp · Del để xoá")
         hint.setStyleSheet("color: gray; font-size: 11px;")
-        head = QVBoxLayout()
-        head.setContentsMargins(10, 8, 8, 6)
-        head.setSpacing(4)
+
         head.addWidget(minio_btn)
-        head.addWidget(title)
+        head.addLayout(title_row)
         head.addWidget(hint)
 
+        # --- Tree Widget ---
         self.tree = QTreeWidget()
         self.tree.setColumnCount(2)
         self.tree.setHeaderHidden(True)
-        self.tree.setIndentation(12)
+        self.tree.setIndentation(14)
         self.tree.setUniformRowHeights(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.tree.setStyleSheet("QTreeWidget { border: none; } QTreeWidget::item { padding: 4px 2px; }")
+        self._apply_tree_style()
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.itemChanged.connect(self._on_check_changed)
@@ -72,23 +102,34 @@ class LibraryPanel(QWidget):
         self._open_timer = QTimer(self, singleShot=True, interval=250)
         self._open_timer.timeout.connect(self._open_checked)
 
-        # shown while days are ticked
+        # --- Multi-selection Floating Bottom Bar ---
         self.sel_label = QLabel()
+        self.sel_label.setStyleSheet("font-weight: 600; font-size: 11px; color: #3b82f6;")
         clear_btn = QPushButton("Bỏ chọn")
-        clear_btn.setFlat(True)
+        clear_btn.setCursor(Qt.PointingHandCursor)
+        clear_btn.setStyleSheet(
+            "QPushButton { border: 1px solid palette(mid); border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
+            "QPushButton:hover { background-color: rgba(239, 68, 68, 0.15); color: #ef4444; border-color: #ef4444; }"
+        )
         clear_btn.clicked.connect(self.clear_checks)
-        self.bar = QWidget()
-        self.bar.setStyleSheet("QWidget#bar { border-top: 1px solid palette(mid); }")
-        self.bar.setObjectName("bar")
+
+        self.bar = QFrame()
+        self.bar.setObjectName("selBar")
+        dark = is_dark_mode()
+        self.bar.setStyleSheet(
+            f"#selBar {{ background: {'#1e1e2e' if dark else '#f1f5f9'}; "
+            f"border-top: 1px solid {'#313244' if dark else '#e2e8f0'}; }}"
+        )
         bar_lay = QHBoxLayout(self.bar)
-        bar_lay.setContentsMargins(10, 6, 8, 8)
+        bar_lay.setContentsMargins(12, 8, 12, 8)
         bar_lay.addWidget(self.sel_label, 1)
         bar_lay.addWidget(clear_btn)
         self.bar.hide()
 
-        self.empty = QLabel("Chưa có ngày nào.\nMở 1 file log hoặc tải từ MinIO, app sẽ tự lưu vào đây.")
+        # --- Empty State ---
+        self.empty = QLabel("📂 Chưa có log nào.\n\nMở file log (.zip, .tar.gz, .log) hoặc tải từ MinIO để tự động lưu vào đây.")
         self.empty.setAlignment(Qt.AlignCenter)
-        self.empty.setStyleSheet("color: gray; padding: 20px;")
+        self.empty.setStyleSheet("color: gray; font-size: 12px; padding: 30px 16px; line-height: 1.4;")
         self.empty.setWordWrap(True)
 
         lay = QVBoxLayout(self)
@@ -100,30 +141,70 @@ class LibraryPanel(QWidget):
         lay.addWidget(self.bar)
         self.refresh()
 
+    def _apply_tree_style(self):
+        dark = is_dark_mode()
+        bg = "#181825" if dark else "#f8fafc"
+        hover_bg = "rgba(255, 255, 255, 0.05)" if dark else "rgba(0, 0, 0, 0.04)"
+        sel_bg = "rgba(59, 130, 246, 0.22)" if dark else "rgba(59, 130, 246, 0.15)"
+        border_r = "#313244" if dark else "#e2e8f0"
+
+        self.tree.setStyleSheet(
+            f"QTreeWidget {{"
+            f"  background-color: {bg};"
+            f"  border: none;"
+            f"  border-right: 1px solid {border_r};"
+            f"}}"
+            f"QTreeWidget::item {{"
+            f"  padding: 6px 4px;"
+            f"  border-radius: 4px;"
+            f"  margin: 1px 4px;"
+            f"}}"
+            f"QTreeWidget::item:hover {{"
+            f"  background-color: {hover_bg};"
+            f"}}"
+            f"QTreeWidget::item:selected {{"
+            f"  background-color: {sel_bg};"
+            f"  color: #3b82f6;"
+            f"  font-weight: 600;"
+            f"}}"
+        )
+
     # ---------- building ----------
     def refresh(self):
         checked = set(self.checked_ids())
-        collapsed = {self.tree.topLevelItem(i).data(0, KEY) for i in range(self.tree.topLevelItemCount())
-                     if not self.tree.topLevelItem(i).isExpanded()}
+        collapsed = {
+            self.tree.topLevelItem(i).data(0, KEY)
+            for i in range(self.tree.topLevelItemCount())
+            if not self.tree.topLevelItem(i).isExpanded()
+        }
         self.tree.blockSignals(True)
         self.tree.clear()
         month_node = None
         for it in sorted(self.lib.items, key=lambda i: (i.date, i.name), reverse=True):
             month = _month_label(it.date)
             if month_node is None or month_node.data(0, KEY) != month:
-                month_node = QTreeWidgetItem([month, ""])
+                month_node = QTreeWidgetItem([f"📅 {month}", ""])
                 month_node.setData(0, KIND, "month")
                 month_node.setData(0, KEY, month)
                 month_node.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsAutoTristate)
                 month_node.setForeground(0, QColor("gray"))
+                f = QFont(month_node.font(0))
+                f.setBold(True)
+                month_node.setFont(0, f)
                 self.tree.addTopLevelItem(month_node)
                 month_node.setExpanded(month not in collapsed)
-            node = QTreeWidgetItem([it.name, f"{it.errors:,}" if it.errors else ""])
+
+            err_badge = f"{it.errors:,} ERROR" if it.errors else ""
+            node = QTreeWidgetItem([it.name, err_badge])
             node.setData(0, KIND, "item")
             node.setData(0, KEY, it.id)
             node.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
             node.setCheckState(0, Qt.Checked if it.id in checked else Qt.Unchecked)
             node.setForeground(1, ERROR_COLOR)
+            f_err = QFont(node.font(1))
+            f_err.setBold(True)
+            f_err.setPointSize(max(7, f_err.pointSize() - 1))
+            node.setFont(1, f_err)
             node.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
             stored_path = self.lib.path_of(it)
             node.setToolTip(
@@ -133,7 +214,7 @@ class LibraryPanel(QWidget):
                 f"{it.entries:,} entry · {it.errors:,} ERROR · {it.warns:,} WARN\n"
                 f"Import lúc {it.imported_at.replace('T', ' ')}",
             )
-            node.setToolTip(1, f"{it.errors:,} ERROR")
+            node.setToolTip(1, f"{it.errors:,} lỗi ERROR")
             month_node.addChild(node)
         self.tree.blockSignals(False)
         self.empty.setVisible(not self.lib.items)
@@ -163,12 +244,16 @@ class LibraryPanel(QWidget):
         self._paint_current()
 
     def _paint_current(self):
-        # setFont emits itemChanged, which would look like a checkbox toggle
         self.tree.blockSignals(True)
         for n in self._day_nodes():
             f = QFont(n.font(0))
-            f.setBold(n.data(0, KEY) in self.current_ids)
+            is_active = n.data(0, KEY) in self.current_ids
+            f.setBold(is_active)
             n.setFont(0, f)
+            if is_active:
+                n.setForeground(0, QColor("#3b82f6"))
+            else:
+                n.setData(0, Qt.ForegroundRole, None)
         self.tree.blockSignals(False)
 
     def _update_bar(self):
@@ -178,7 +263,7 @@ class LibraryPanel(QWidget):
 
     # ---------- interaction ----------
     def _on_check_changed(self, node, col):
-        self._toggled = True  # the click that follows was on the checkbox, not "open"
+        self._toggled = True
         self._update_bar()
         self._open_timer.start()
 
@@ -198,6 +283,8 @@ class LibraryPanel(QWidget):
 
     def _rename(self, item_id: str):
         it = self.lib.get(item_id)
+        if not it:
+            return
         name, ok = QInputDialog.getText(self, "Đổi tên", "Tên mới:", text=it.name)
         if ok and name.strip():
             self.lib.rename(item_id, name.strip())
@@ -271,14 +358,15 @@ class LibraryPanel(QWidget):
         menu = QMenu(self)
         if node.data(0, KIND) == "month":
             ids = [node.child(j).data(0, KEY) for j in range(node.childCount())]
-            menu.addAction(f"Xem gộp cả {node.data(0, KEY).lower()}", lambda: self.open_items.emit(ids))
+            month_clean = node.data(0, KEY).replace("📅 ", "").lower()
+            menu.addAction(f"Xem gộp cả {month_clean}", lambda: self.open_items.emit(ids))
             menu.addSeparator()
-            menu.addAction(f"🗑 Xoá cứng cả {node.data(0, KEY).lower()}…", lambda: self._hard_remove(ids))
+            menu.addAction(f"🗑 Xoá cứng cả {month_clean}…", lambda: self._hard_remove(ids))
         else:
             item_id = node.data(0, KEY)
             it = self.lib.get(item_id)
             checked = self.checked_ids()
-            menu.addAction("Mở", lambda: self.open_items.emit([item_id]))
+            menu.addAction("Mở ngày này", lambda: self.open_items.emit([item_id]))
             if len(checked) > 1:
                 menu.addAction(f"Xem gộp {len(checked)} ngày đã chọn", lambda: self.open_items.emit(checked))
             if it:
@@ -293,4 +381,3 @@ class LibraryPanel(QWidget):
                 )
             menu.addAction("Bỏ khỏi danh sách (giữ lại file)", lambda: self._soft_remove([item_id]))
         menu.exec(self.tree.viewport().mapToGlobal(pos))
-

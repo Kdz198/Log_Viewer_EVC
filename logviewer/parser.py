@@ -13,7 +13,7 @@ HEADER_RE = re.compile(
 SPRING_REST_RE = re.compile(
     r"^\d+\s+---\s+(?:\[(?P<app>[^\]]*)\]\s+)?\[(?P<thread>[^\]]*)\]\s+(?P<logger>\S+)\s*:\s?(?P<msg>.*)$"
 )
-TRACE_RE = re.compile(r"\[([A-Z]{2,10}-[A-Za-z0-9_-]{10,})\]")
+TRACE_RE = re.compile(r"\[([A-Za-z0-9_-]{12,})\]")
 
 LEVEL_GROUP = {"TRACE": "DEBUG", "DEBUG": "DEBUG", "INFO": "INFO",
                "WARN": "WARN", "WARNING": "WARN", "ERROR": "ERROR", "FATAL": "ERROR"}

@@ -191,7 +191,7 @@ class MinioDialog(QDialog):
         self.remember_cb.setChecked(True)
         self.connect_btn = QPushButton("⚡ Kết nối && Lấy danh sách")
         self.connect_btn.setFixedHeight(30)
-        self.connect_btn.setStyleSheet("font-weight: 600; padding: 4px 14px;")
+        self.connect_btn.setStyleSheet("background-color: #2563eb; color: white; border: none; border-radius: 4px; font-weight: 600; padding: 4px 14px;")
 
         cred_row.addWidget(QLabel("User:"))
         cred_row.addWidget(self.user_edit, 1)
@@ -249,7 +249,7 @@ class MinioDialog(QDialog):
         self.deselect_all_btn.setToolTip("Bỏ chọn toàn bộ")
 
         self.counter_label = QLabel("Đã chọn: 0 ngày")
-        self.counter_label.setStyleSheet("color: #4b5563; font-weight: 600; font-size: 12px; padding: 0 4px;")
+        self.counter_label.setStyleSheet("color: #3b82f6; font-weight: 600; font-size: 12px; padding: 0 4px;")
 
         filter_row.addWidget(self.bucket_combo)
         filter_row.addWidget(self.search_edit, 1)

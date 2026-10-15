@@ -4,10 +4,11 @@ from collections import Counter
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QItemSelectionModel, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QFrame, QHeaderView, QLabel,
-                               QMainWindow, QMenu, QMessageBox, QSplitter, QTableView, QVBoxLayout,
-                               QWidget)
+from PySide6.QtGui import QAction, QFont, QKeySequence
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QFrame,
+                               QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMenu,
+                               QMessageBox, QPushButton, QSplitter, QTableView,
+                               QVBoxLayout, QWidget)
 
 try:
     from .. import __version__
@@ -21,6 +22,7 @@ try:
     from .loading_overlay import LoadingOverlay
     from .log_delegate import LogDelegate
     from .minio_dialog import MinioDialog
+    from .theme import get_app_stylesheet, is_dark_mode
 except (ImportError, ValueError):
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -35,6 +37,7 @@ except (ImportError, ValueError):
     from logviewer.ui.loading_overlay import LoadingOverlay
     from logviewer.ui.log_delegate import LogDelegate
     from logviewer.ui.minio_dialog import MinioDialog
+    from logviewer.ui.theme import get_app_stylesheet, is_dark_mode
 
 
 class LoadWorker(QThread):
@@ -79,12 +82,127 @@ def detect_date(chunks, entries: list[LogEntry], source: Path | None = None) -> 
     return ""
 
 
+class EmptyStateWidget(QWidget):
+    """Welcoming card shown when no log file is opened."""
+    open_minio_requested = Signal()
+    open_file_requested = Signal()
+    open_folder_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("emptyStateWidget")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 40, 20, 40)
+        outer.setAlignment(Qt.AlignCenter)
+
+        card = QFrame()
+        card.setObjectName("emptyCard")
+        dark = is_dark_mode()
+        bg = "#1e1e2e" if dark else "#ffffff"
+        border = "#313244" if dark else "#e2e8f0"
+        card.setStyleSheet(
+            f"#emptyCard {{"
+            f"  background-color: {bg};"
+            f"  border: 1px solid {border};"
+            f"  border-radius: 12px;"
+            f"  max-width: 580px;"
+            f"}}"
+        )
+        card_lay = QVBoxLayout(card)
+        card_lay.setContentsMargins(36, 32, 36, 32)
+        card_lay.setSpacing(14)
+        card_lay.setAlignment(Qt.AlignCenter)
+
+        icon_label = QLabel("⚡")
+        icon_label.setStyleSheet("font-size: 38px;")
+        icon_label.setAlignment(Qt.AlignCenter)
+
+        title = QLabel("Chào mừng đến với Log Viewer")
+        t_font = QFont(title.font())
+        t_font.setPointSize(16)
+        t_font.setBold(True)
+        title.setFont(t_font)
+        title.setAlignment(Qt.AlignCenter)
+
+        desc = QLabel(
+            "Kéo thả file log (.zip, .tar.gz, .log) vào đây,\n"
+            "hoặc chọn một trong các thao tác nhanh bên dưới:"
+        )
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setStyleSheet("color: gray; font-size: 13px; line-height: 1.4;")
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        minio_btn = QPushButton("☁ Tải từ MinIO…")
+        minio_btn.setCursor(Qt.PointingHandCursor)
+        minio_btn.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #2563eb;"
+            "  color: #ffffff;"
+            "  border: none;"
+            "  border-radius: 8px;"
+            "  padding: 8px 16px;"
+            "  font-weight: 600;"
+            "  font-size: 12px;"
+            "}"
+            "QPushButton:hover { background-color: #1d4ed8; }"
+        )
+        minio_btn.clicked.connect(self.open_minio_requested)
+
+        file_btn = QPushButton("📁 Mở file…")
+        file_btn.setCursor(Qt.PointingHandCursor)
+        file_btn.setStyleSheet(
+            "QPushButton {"
+            "  border: 1px solid palette(mid);"
+            "  border-radius: 8px;"
+            "  padding: 8px 16px;"
+            "  font-size: 12px;"
+            "}"
+            "QPushButton:hover { background-color: rgba(59, 130, 246, 0.12); border-color: #3b82f6; }"
+        )
+        file_btn.clicked.connect(self.open_file_requested)
+
+        folder_btn = QPushButton("📂 Mở thư mục…")
+        folder_btn.setCursor(Qt.PointingHandCursor)
+        folder_btn.setStyleSheet(
+            "QPushButton {"
+            "  border: 1px solid palette(mid);"
+            "  border-radius: 8px;"
+            "  padding: 8px 16px;"
+            "  font-size: 12px;"
+            "}"
+            "QPushButton:hover { background-color: rgba(59, 130, 246, 0.12); border-color: #3b82f6; }"
+        )
+        folder_btn.clicked.connect(self.open_folder_requested)
+
+        btn_row.addWidget(minio_btn)
+        btn_row.addWidget(file_btn)
+        btn_row.addWidget(folder_btn)
+
+        hints = QLabel(
+            "Phím tắt:  <b>Ctrl+M</b> MinIO  ·  <b>Ctrl+O</b> Mở file  ·  <b>F8/F7</b> Duyệt ERROR/WARN  ·  <b>Ctrl+F</b> Tìm chi tiết"
+        )
+        hints.setAlignment(Qt.AlignCenter)
+        hints.setStyleSheet("color: gray; font-size: 11px; margin-top: 10px;")
+
+        card_lay.addWidget(icon_label)
+        card_lay.addWidget(title)
+        card_lay.addWidget(desc)
+        card_lay.addLayout(btn_row)
+        card_lay.addWidget(hints)
+
+        outer.addWidget(card)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, library: Library | None = None):
         super().__init__()
         self.setWindowTitle(f"Log Viewer {__version__}")
         self.resize(1400, 850)
         self.setAcceptDrops(True)
+        self.setStyleSheet(get_app_stylesheet())
 
         self.library = library or Library()
         self.current_label = ""
@@ -94,10 +212,13 @@ class MainWindow(QMainWindow):
         self._import_from: Path | None = None
         self._import_many: bool = False
         self._loading_ids: list[str] = []
+        self._pending_label: str = ""
         self._queued: tuple | None = None
 
         self.model = LogTableModel(self)
         self.filter_bar = FilterBar()
+
+        # Table View
         self.table = QTableView()
         self.table.setModel(self.model)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -108,56 +229,74 @@ class MainWindow(QMainWindow):
         self.table.setFrameShape(QFrame.NoFrame)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.verticalHeader().setDefaultSectionSize(32)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
         self.delegate = LogDelegate(self.table)
         self.table.setItemDelegate(self.delegate)
         self.table.entered.connect(lambda idx: self.delegate.set_hover_row(idx.row()))
         self.table.viewport().installEventFilter(self)
+
         hh = self.table.horizontalHeader()
         hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         hh.setHighlightSections(False)
-        hh.resizeSection(0, 175)
-        hh.resizeSection(1, 80)
+        hh.resizeSection(0, 180)
+        hh.resizeSection(1, 85)
         hh.setStretchLastSection(True)
+        dark = is_dark_mode()
+        hh_bg = "#181825" if dark else "#f1f5f9"
+        hh_border = "#313244" if dark else "#e2e8f0"
         self.table.setStyleSheet(
-            "QHeaderView::section { padding: 6px 10px; border: none;"
-            " border-bottom: 1px solid palette(mid); background: palette(window); font-weight: 600; }")
+            f"QHeaderView::section {{"
+            f"  padding: 7px 10px;"
+            f"  border: none;"
+            f"  border-bottom: 1px solid {hh_border};"
+            f"  background: {hh_bg};"
+            f"  font-weight: 600;"
+            f"  font-size: 11px;"
+            f"}}"
+        )
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.doubleClicked.connect(self._filter_by_row_trace)
         self.table.selectionModel().currentRowChanged.connect(self._show_current)
 
+        # Detail Panel
         self.detail = DetailPanel()
-        splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(self.table)
-        splitter.addWidget(self.detail)
-        splitter.setSizes([560, 260])
+        self.detail.filter_trace_requested.connect(self.filter_bar.set_search)
 
-        self.empty_hint = QLabel("Kéo thả file .zip / .tar.gz / .log vào đây, Ctrl+O mở file, hoặc Ctrl+M tải từ MinIO\n"
-                                 "Các ngày đã mở sẽ được lưu ở cột bên trái")
-        self.empty_hint.setAlignment(Qt.AlignCenter)
-        self.empty_hint.setStyleSheet("font-size: 16px; color: gray; padding: 40px;")
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.addWidget(self.table)
+        self.splitter.addWidget(self.detail)
+        self.splitter.setSizes([560, 260])
+
+        # Modern Empty State Card
+        self.empty_state = EmptyStateWidget()
+        self.empty_state.open_minio_requested.connect(self.open_minio_dialog)
+        self.empty_state.open_file_requested.connect(self.open_dialog)
+        self.empty_state.open_folder_requested.connect(self.open_folder_dialog)
 
         viewer = QWidget()
         lay = QVBoxLayout(viewer)
         lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
         lay.addWidget(self.filter_bar)
-        lay.addWidget(self.empty_hint)
-        lay.addWidget(splitter, 1)
+        lay.addWidget(self.empty_state, 1)
+        lay.addWidget(self.splitter, 1)
+        self.splitter.hide()
 
         self.library_panel = LibraryPanel(self.library)
         self.library_panel.open_items.connect(self.open_items)
         self.library_panel.removed.connect(self._on_library_removed)
         self.library_panel.open_minio.connect(self.open_minio_dialog)
+
         main_split = QSplitter(Qt.Horizontal)
         main_split.addWidget(self.library_panel)
         main_split.addWidget(viewer)
         main_split.setStretchFactor(1, 1)
-        main_split.setSizes([240, 1160])
+        main_split.setSizes([260, 1140])
         self.setCentralWidget(main_split)
 
-        self.status = QLabel()
+        self.status = QLabel("Sẵn sàng")
         self.statusBar().addWidget(self.status, 1)
 
         self.filter_bar.changed.connect(self.apply_filters)
@@ -308,7 +447,8 @@ class MainWindow(QMainWindow):
         elif len(ids) == 1:
             self._refresh_stats(ids[0], entries)
         self.library_panel.set_current(ids)
-        self.empty_hint.hide()
+        self.empty_state.hide()
+        self.splitter.show()
         self.setWindowTitle(f"{self.current_label} — Log Viewer {__version__}")
         self.model.set_entries(entries)
         self.filter_bar.set_counts(Counter(e.level for e in entries))
@@ -354,7 +494,8 @@ class MainWindow(QMainWindow):
         self.model.set_entries([])
         self.filter_bar.set_counts(Counter())
         self.detail.show_entry(None, None)
-        self.empty_hint.show()
+        self.splitter.hide()
+        self.empty_state.show()
         self.status.setText("Đã xoá file log.")
 
     def _on_worker_finished(self):
@@ -404,16 +545,19 @@ class MainWindow(QMainWindow):
         fb.search.blockSignals(True)
         fb.search.clear()
         fb.search.blockSignals(False)
-        for cb in fb.level_boxes.values():
-            cb.blockSignals(True)
-            cb.setChecked(True)
-            cb.blockSignals(False)
+        for btn in fb.level_boxes.values():
+            btn.blockSignals(True)
+            btn.setChecked(True)
+            btn.blockSignals(False)
+            btn._update_appearance()
         self.apply_filters()
 
     def _update_status(self):
         total, shown = len(self.model.entries), len(self.model.rows)
-        self.status.setText(f"{self.current_label}  |  {len(self.chunks)} file  |  Hiển thị {shown:,} / {total:,} entry"
-                            "  |  F8: ERROR kế tiếp · F7: WARN kế tiếp · double-click: tìm theo trace ID")
+        self.status.setText(
+            f"📁 {self.current_label}   |   📦 {len(self.chunks)} file   |   📊 Hiển thị {shown:,} / {total:,} entry"
+            "   |   F8: ERROR · F7: WARN · Double-click dòng: Lọc theo Trace ID"
+        )
 
     def eventFilter(self, obj, event):
         if obj is self.table.viewport() and event.type() == QEvent.Leave:
@@ -507,9 +651,9 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    import sys
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
-
